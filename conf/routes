@@ -1,0 +1,14 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# ~~~~
+
+# Home page
+GET         /                          controllers.Application.index
+
+# Map static resources from the /public folder to the /assets URL path
+GET         /assets/*file              controllers.Assets.at(path="/public", file)
+
+# Rake Server
+POST        /log/track                 controllers.OldLog.logTrack
+GET         /old/admin/update/t        controllers.OldLog.updateTokenTopicMap
+GET         /old/admin/update/p        controllers.OldLog.updateProperty

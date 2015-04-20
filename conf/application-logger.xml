@@ -1,0 +1,30 @@
+<configuration scan="true" scanPeriod="10 seconds">
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{YYYMMddHHmmss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ROLLING_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>rake.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>rake.%d{yyyy-MM-dd-HH-mm}.log.gz</fileNamePattern>
+            <maxHistory>60</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{YYYMMddHHmmss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="error">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="ROLLING_FILE" />
+    </root>
+
+    <logger name="play" level="info" />
+    <logger name="application" level="info" />
+    <logger name="OldLog" level="info" />
+    <logger name="com.rake.rakeapi.sender.ConsoleSender" level="debug" />
+    <logger name="com.jolbox" level="info" />
+    <logger name="scala.slick" level="info" />
+</configuration>
