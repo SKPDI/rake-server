@@ -18,7 +18,8 @@ libraryDependencies ++= Seq(
   "org.slf4j" % "log4j-over-slf4j" % "1.7.6",
   "io.dropwizard.metrics" % "metrics-core" % "3.1.0",
   "joda-time" % "joda-time" % "2.7",
-  "mysql" % "mysql-connector-java" % "5.1.34"
+  "mysql" % "mysql-connector-java" % "5.1.34",
+  "com.skplanet.pdp.cryptoutils" % "crypto-dic" % "0.3"
 )
 
 resolvers += Resolver.mavenLocal

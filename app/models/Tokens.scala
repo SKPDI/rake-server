@@ -2,8 +2,8 @@ package models
 
 import java.sql.Timestamp
 
+import play.api.Play.current
 import play.api.db.slick.Config.driver.simple._
-import scala.slick.lifted.Tag
 
 case class Token(accessTokenId: Int, userId: String, token: String, createTime: Timestamp,
                  expireTime: Timestamp, appender: String, file: String, conversionPattern: String,
@@ -11,7 +11,6 @@ case class Token(accessTokenId: Int, userId: String, token: String, createTime: 
                  writerKey: String, writer: String)
 
 class Tokens(tag: Tag) extends Table[Token](tag, "tb_access_token") {
-
   def accessTokenId = column[Int]("access_token_id", O.DBType("int(11)"), O.NotNull, O.PrimaryKey, O.AutoInc)
 
   def userId = column[String]("user_id", O.DBType("varchar(128)"), O.NotNull)
@@ -41,7 +40,7 @@ class Tokens(tag: Tag) extends Table[Token](tag, "tb_access_token") {
   def writer = column[String]("writer", O.DBType("varchar(64)"), O.Nullable)
 
   def * = (accessTokenId, userId, token, createTime, expireTime, appender, file, conversionPattern, datePattern, encoding,
-    used, updatedTime, writerKey, writer) <> ((Token.apply _).tupled, Token.unapply)
+    used, updatedTime, writerKey, writer) <>((Token.apply _).tupled, Token.unapply)
 
   /*
     mysql> desc tb_access_token;
@@ -68,7 +67,21 @@ class Tokens(tag: Tag) extends Table[Token](tag, "tb_access_token") {
 }
 
 object Tokens {
-
   val tokens = TableQuery[Tokens]
 
+  val tokenTopicMap = scala.collection.mutable.Map[String, String]()
+
+  play.api.db.slick.DB.withSession { implicit session =>
+    tokens.list.map(t => tokenTopicMap.put(t.token, t.writerKey))
+  }
+
+  def getTopic(token: String) = play.api.db.slick.DB.withSession { implicit session =>
+    tokenTopicMap.getOrElseUpdate(
+      token,
+      tokens.filter(t => t.token === token).list match {
+        case x :: xs => x.writerKey
+        case _ => "INVALID"
+      }
+    )
+  }
 }

@@ -1,7 +1,9 @@
 package models
 
+import java.util.Properties
 import java.sql.Timestamp
 
+import play.api.Play.current
 import play.api.db.slick.Config.driver.simple._
 
 case class OldRakeProperty(pKey: String, pValue: String, updatedTime: Timestamp)
@@ -28,4 +30,22 @@ class OldRakeProperties(tag: Tag) extends Table[OldRakeProperty](tag, "tb_proper
 
 object OldRakeProperties {
   val oldRakeProperties = TableQuery[OldRakeProperties]
+
+  val properties = new Properties
+
+  play.api.db.slick.DB.withSession { implicit session =>
+    oldRakeProperties.list.map(p => properties.setProperty(p.pKey, p.pValue))
+  }
+
+  def getProperty(pKey: String) =
+    properties.getProperty(pKey,
+      play.api.db.slick.DB.withSession { implicit session =>
+        oldRakeProperties.filter(_.pKey === pKey).list
+      } match {
+        case x :: xs => x.pValue
+        case _ => ""
+      })
+
+  // Only for test
+  def setProperty(pKey: String, pValue: String) = properties.setProperty(pKey, pValue)
 }

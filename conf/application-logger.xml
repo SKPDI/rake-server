@@ -23,7 +23,7 @@
 
     <logger name="play" level="info" />
     <logger name="application" level="info" />
-    <logger name="OldLog" level="info" />
+    <logger name="OldLog" level="debug" />
     <logger name="com.rake.rakeapi.sender.ConsoleSender" level="debug" />
     <logger name="com.jolbox" level="info" />
     <logger name="scala.slick" level="info" />

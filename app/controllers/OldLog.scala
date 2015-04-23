@@ -1,35 +1,29 @@
 package controllers
 
 import java.net.InetAddress
-import java.util.Properties
 
 import scala.concurrent.Future
 
+import com.di.security.CryptoUtils
 import org.joda.time.format.DateTimeFormat
 import sun.misc.BASE64Decoder
 
 import play.api._
 import play.api.Play.current
-import play.api.db.slick._
-import play.api.db.slick.Config.driver.simple._
 import play.api.libs.concurrent.Execution.Implicits.defaultContext
 import play.api.libs.json._
 import play.api.mvc._
-import play.core.parsers.FormUrlEncodedParser
 
 import common.OldLogMetrics
 import common.RakeAPI._
 import models._
 
-
 object OldLog extends Controller with OldLogMetrics {
   val logger = Logger("OldLog")
 
-  val tokenTopicMap = scala.collection.mutable.Map[String, String]()
-
-  val properties = new Properties()
-
   val base64Decoder = new BASE64Decoder
+
+  val rsaPublicKey = CryptoUtils.getPublicKey(OldRakeProperties.getProperty("encModulus"), OldRakeProperties.getProperty("encPubExponent"))
 
   val dateTimeFmt = DateTimeFormat.forPattern("yyyyMMddHHmmssSSS")
 
@@ -37,13 +31,13 @@ object OldLog extends Controller with OldLogMetrics {
 
   val PROPERTIES_KEY = "properties"
 
-  val readClientVersion = (__ \ PROPERTIES_KEY \ 'rakeLibVersion).json.pick
+  val readClientVersion = (__ \ PROPERTIES_KEY \ "rakeLibVersion").json.pick
 
-  val readClientVersionSnake = (__ \ PROPERTIES_KEY \ 'rake_lib_version).json.pick
+  val readClientVersionSnake = (__ \ PROPERTIES_KEY \ "rake_lib_version").json.pick
 
-  val readClientType = (__ \ PROPERTIES_KEY \ 'rakeLib).json.pick
+  val readClientType = (__ \ PROPERTIES_KEY \ "rakeLib").json.pick
 
-  val readClientTypeSnake = (__ \ PROPERTIES_KEY \ 'rake_lib).json.pick
+  val readClientTypeSnake = (__ \ PROPERTIES_KEY \ "rake_lib").json.pick
 
   def getValue[A <: JsValue](json: JsValue, r1: Reads[A], r2: Reads[A]): Option[A] = {
     json.transform(r1).asOpt match {
@@ -110,7 +104,7 @@ object OldLog extends Controller with OldLogMetrics {
     eqAndGtRec(aList, bList)
   }
 
-  val logTransform: (JsValue, String) => JsValue = {
+  def logTransform: (JsValue, String) => JsValue = {
     (log, clientIp) =>
       val recvDateTime = dateTimeFmt.print(System.currentTimeMillis())
       val tokenValue = getValueFromRootAndProperties(log, "token", "NO_TOKEN")
@@ -149,52 +143,121 @@ object OldLog extends Controller with OldLogMetrics {
     o => o ++ Json.obj(key -> value)
   })
 
+  def makeUpdateJsValueReads(jsPath: JsPath, key: String, value: JsValue) = jsPath.json.update(__.read[JsObject].map {
+    o => o ++ Json.obj(key -> value)
+  })
+
+  def makeUpdateJsObjectReads(jsPath: JsPath, key: String, value: JsObject) = jsPath.json.update(__.read[JsObject].map {
+    o => o ++ Json.obj(key -> value)
+  })
+
+  def makeUpdateJsArrayReads(jsPath: JsPath, key: String, value: JsArray) = jsPath.json.update(__.read[JsObject].map {
+    o => o ++ Json.obj(key -> value)
+  })
+
+  def makePropertiesBodyUpdateReads(key: String, value: String) = makeUpdateReads(__ \ PROPERTIES_KEY \ "_$body", key, value)
+
   def makePropertiesUpdateReads(key: String, value: String) = makeUpdateReads(__ \ PROPERTIES_KEY, key, value)
 
   def makeRootUpdateReads(key: String, value: String) = makeUpdateReads(__, key, value)
 
-  val sendToKafka: JsValue => Boolean = {
+  def sendToKafka: JsValue => Boolean = {
     log =>
       val tokenCandidates = (log \ "token").asOpt[String]
       logger.trace(s"token $tokenCandidates")
       tokenCandidates match {
-        case Some(token) if tokenTopicMap.contains(token) =>
-          getTokenMeter(token).mark()
-          loggerAPI.log(token, log.toString())
-        case Some(token) if !tokenTopicMap.contains(token) =>
-          invalidToken.mark()
-          loggerAPI.log("INVALID", log.toString())
+        case Some(token) =>
+          val topic = Tokens.getTopic(token)
+          getTokenMeter(topic).mark()
+          loggerAPI.log(topic, log.toString())
         case _ =>
           noToken.mark()
           loggerAPI.log("NO_TOKEN", log.toString())
       }
   }
 
-  val checkResults: Seq[Boolean] => Result = seq => seq.forall(p => p) match {
+  def checkResults: Seq[Boolean] => Result = seq => seq.forall(p => p) match {
     case true => Ok("send Data")
     case false => BadRequest("Somethings are wrong")
+  }
+
+  def removePI: JsValue => JsValue = {
+    log: JsValue =>
+      val topic = Tokens.getTopic((log \ "token").as[String])
+      val isInMdnSet = OldRakeProperties.getProperty("removeMdnAppender").split(",").to[Set].contains(topic)
+      val isInDeviceIdSet = OldRakeProperties.getProperty("removeDeviceIdAppender").split(",").to[Set].contains(topic)
+      isSnakeCase(log) match {
+        case true => List(log)
+          .map(j => if (isInMdnSet) j.transform(makeBothUpdateReads("mdn", "")).asOpt.getOrElse(j) else j)
+          .map(j => if (isInDeviceIdSet) j.transform(makeBothUpdateReads("device_id", "")).asOpt.getOrElse(j) else j)
+          .head
+        case false => List(log)
+          .map(j => if (isInMdnSet) j.transform(makeBothUpdateReads("mdn", "")).asOpt.getOrElse(j) else j)
+          .map(j => if (isInDeviceIdSet) j.transform(makeBothUpdateReads("deviceId", "")).asOpt.getOrElse(j) else j)
+          .head
+      }
+  }
+
+  def encryptJsArray: JsArray => JsArray = { jsArray =>
+    JsArray(jsArray.value.seq.map(encryptJsValue(_)))
+  }
+
+  def encryptJsObject: JsObject => JsObject = { jsObject =>
+    JsObject(jsObject.value.map(p => (p._1, encryptJsValue(p._2))).toSeq)
+  }
+
+  def encryptJsValue: JsValue => JsValue = {
+    case JsString(str) => Json.toJson(CryptoUtils.encrypt(str, rsaPublicKey))
+    case JsNumber(num) => Json.toJson(CryptoUtils.encrypt(num.toString, rsaPublicKey))
+    case JsBoolean(bool) => Json.toJson(CryptoUtils.encrypt(bool.toString, rsaPublicKey))
+    case _ => JsNull
+  }
+
+  def encrypt(jsPath: JsPath): JsValue => JsValue = { log =>
+    var vlog = log
+    (vlog \ "_$encryptionFields").asOpt[JsArray] match {
+      case Some(jsArray) =>
+        jsArray.value.map(_.as[String]).foreach(key => vlog.transform((jsPath \ key).json.pick).asOpt match {
+          case Some(json) if json.isInstanceOf[JsArray] =>
+            vlog = vlog.transform(makeUpdateJsArrayReads(jsPath, key, encryptJsArray(json.asInstanceOf[JsArray]))).asOpt.getOrElse(vlog)
+          case Some(json) if json.isInstanceOf[JsObject] =>
+            vlog = vlog.transform(makeUpdateJsObjectReads(jsPath, key, encryptJsObject(json.asInstanceOf[JsObject]))).asOpt.getOrElse(vlog)
+          case Some(json) if json.isInstanceOf[JsValue] =>
+            vlog = vlog.transform(makeUpdateJsValueReads(jsPath, key, encryptJsValue(json))).asOpt.getOrElse(vlog)
+          case None =>
+        })
+      case None =>
+    }
+    vlog
   }
 
   def processLog = Action.async {
     request =>
       requests.mark()
       Future {
-        logger.debug(request.headers.toString())
-        request.body.asText match {
-          case Some(body) =>
-            val urlDecodedData = FormUrlEncodedParser.parse(body)
-            (urlDecodedData.get("compress"), urlDecodedData.get("data")) match {
-              case (Some(compressCodec), Some(data)) if 1 == compressCodec.length && 1 == data.length =>
-                val jsonData = base64Decoder.decodeBuffer(data.head)
-                val clientIp = request.remoteAddress
-                checkResults {
-                  Json.parse(jsonData).asOpt[List[JsValue]].getOrElse[List[JsValue]](List()).map {
-                    log => sendToKafka(logTransform(log, clientIp))
+        calReponseTime {
+          logger.debug(request.headers.toString())
+          request.body.asFormUrlEncoded match {
+            case Some(body) =>
+              (body.get("compress"), body.get("data")) match {
+                case (Some(compressCodec), Some(data)) if 1 == compressCodec.length && 1 == data.length =>
+                  val jsonData = base64Decoder.decodeBuffer(data.head)
+                  val clientIp = request.remoteAddress
+                  checkResults {
+                    Json.parse(jsonData).asOpt[List[JsValue]].getOrElse[List[JsValue]](List()).map {
+                      log => sendToKafka(encrypt(__ \ PROPERTIES_KEY \ "_$body")(encrypt(__ \ PROPERTIES_KEY)(removePI(logTransform(log, clientIp)))))
+                    }
                   }
-                }
-              case _ => BadRequest("no required fields or wrong data")
-            }
-          case _ => BadRequest("no body")
+                case _ =>
+                  logger.debug("no required fields or wrong data")
+                  logger.debug(request.body.toString)
+                  BadRequest("no required fields or wrong data")
+              }
+            case _ =>
+              logger.debug("no body")
+              logger.debug(request.body.toString)
+              BadRequest("no body")
+          }
         }
       }
   }
@@ -208,42 +271,5 @@ object OldLog extends Controller with OldLogMetrics {
   }
 
   def logTrack = Logging(processLog)
-
-  def updateTokenTopicMap = DBAction { implicit rs =>
-    val updatedList = scala.collection.mutable.HashSet[String]()
-    updatedList.clear()
-    Tokens.tokens.list.map { tokenRow: Token =>
-      val token = tokenRow.token
-      val topic = tokenRow.writerKey
-      logger.debug(s"token: [$token], topic: [$topic]")
-      if (!tokenTopicMap.contains(token) || !tokenTopicMap.getOrElse(token, "").equals(topic)) {
-        tokenTopicMap.synchronized {
-          tokenTopicMap.put(token, topic)
-          logger.info(s"Updated. token: [$token], topic: [$topic]")
-          updatedList.add(token)
-        }
-      }
-    }
-    Ok(updatedList.mkString(","))
-  }
-
-  def updateProperty = DBAction { implicit rs =>
-    val updatedList = scala.collection.mutable.HashSet[String]()
-    updatedList.clear()
-    OldRakeProperties.oldRakeProperties.list.map { orp: OldRakeProperty =>
-      val key = orp.pKey
-      val value = orp.pValue
-      logger.debug(s"key: [$key], value: [$value]")
-      if (!properties.containsKey(key) || !properties.getProperty(key, "").equals(value)) {
-        properties.synchronized {
-          properties.put(key, value)
-          logger.info(s"Updated. key: [$key], value: [$value]")
-          updatedList.add(key)
-        }
-      }
-    }
-    Ok(updatedList.mkString(","))
-  }
-
 
 }

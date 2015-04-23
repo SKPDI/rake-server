@@ -11,7 +11,7 @@ trait Metrics {
     .convertRatesTo(TimeUnit.SECONDS)
     .convertDurationsTo(TimeUnit.MILLISECONDS)
     .build()
-//  reporter.start(10, TimeUnit.SECONDS)
+  reporter.start(10, TimeUnit.SECONDS)
 }
 
 trait OldLogMetrics extends Metrics {
@@ -23,5 +23,16 @@ trait OldLogMetrics extends Metrics {
 
   val tokenMeterMap = scala.collection.mutable.Map[String, Meter]()
 
+  val responseTime = metrics.timer("responseTime")
+
   def getTokenMeter(token: String) = tokenMeterMap.getOrElseUpdate(token, metrics.meter(token))
+
+  def calReponseTime[A](f: => A): A = {
+    val ctx = responseTime.time
+    try{
+      f
+    } finally {
+      ctx.stop
+    }
+  }
 }
